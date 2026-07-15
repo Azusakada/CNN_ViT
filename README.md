@@ -1,121 +1,100 @@
 # 卷积神经网络与 ViT 结合的探索与实现
 
-本项目实现并统一评测三类图像分类模型：轻量 CNN、Tiny ViT，以及受 MobileViT 启发的 CNN-ViT 混合模型。混合块先用卷积提取局部特征，再把同一相对位置的 patch 像素组织成序列，用 Transformer 建模跨区域依赖，最后折叠并与原特征融合。
+本实验围绕 CIFAR-10 图像分类任务，分别实现并比较 Tiny CNN、Tiny ViT、CNN-ViT 混合模型以及两组消融模型。实验重点是观察卷积神经网络的局部特征提取能力与 Vision Transformer 的全局建模能力结合后，对分类准确率、训练代价和推理效率的影响。
 
-## 1. 环境
+## 实验环境
 
-推荐 Python 3.10 或 3.11，CUDA 11.8/12.x 均可。先进入本目录：
+实验依赖的主要环境如下：
+
+| 项目 | 配置 |
+| --- | --- |
+| 操作系统 | Windows 10 |
+| Python | Python 3.10.20 |
+| 深度学习框架 | PyTorch 2.11.0 + CUDA 12.6 |
+| GPU | NVIDIA GeForce RTX 4060 Laptop GPU |
+| 数据集 | CIFAR-10 |
+| 主要依赖 | torch、torchvision、numpy、matplotlib、tqdm |
+
+安装依赖：
 
 ```bash
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 2. 数据集
+如果使用 CPU 运行，可以正常安装 CPU 版本 PyTorch；如果使用 NVIDIA GPU，建议根据本机 CUDA 版本安装对应的 PyTorch GPU 版本。
 
-### CIFAR-10 / CIFAR-100
+## 数据集下载
 
-首次运行添加 `--download`，程序会通过 torchvision 下载到 `--data-root`。
+本实验使用 CIFAR-10 数据集。CIFAR-10 包含 60000 张 32×32 彩色图像，共 10 个类别，其中训练集 50000 张，测试集 10000 张。类别包括 airplane、automobile、bird、cat、deer、dog、frog、horse、ship、truck。
 
-### 自定义数据集
-
-使用 torchvision `ImageFolder` 格式：
+数据集官方下载页面：
 
 ```text
-dataset_root/
-  train/
-    class_a/*.jpg
-    class_b/*.jpg
-  val/
-    class_a/*.jpg
-    class_b/*.jpg
+https://www.cs.toronto.edu/~kriz/cifar.html
 ```
 
-训练时指定 `--dataset imagefolder --data-root /path/to/dataset_root`。
+本项目代码已经支持通过 torchvision 自动下载 CIFAR-10。首次运行时在命令中加入 `--download` 即可，数据会保存到 `--data-root` 指定的目录中，例如 `./data`。
 
-## 3. 先做快速自检
+## 运行方式
 
-下面的命令只跑 1 个 epoch、每阶段 2 个 batch，用于检查环境和数据路径，不可作为报告结果：
+先进入代码目录：
+
+```bash
+cd repro_code
+```
+
+安装依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
+快速检查环境是否可运行：
 
 ```bash
 python run_experiments.py --dataset cifar10 --data-root ./data --download --quick
 ```
 
-## 4. 正式实验
-
-建议先在 CIFAR-10 上运行 100 epoch 的完整对比与消融：
+正式运行 5 组实验：
 
 ```bash
-python run_experiments.py \
-  --dataset cifar10 \
-  --data-root ./data \
-  --download \
-  --epochs 100 \
-  --batch-size 128 \
-  --device cuda
+python run_experiments.py --dataset cifar10 --data-root ./data --download --epochs 100 --batch-size 128 --device cuda
 ```
 
-Windows PowerShell 可写成一行：
-
-```powershell
-python run_experiments.py --dataset cifar10 --data-root .\data --download --epochs 100 --batch-size 128 --device cuda
-```
-
-脚本依次运行：
-
-1. `cnn_tiny`：纯卷积基线；
-2. `vit_tiny`：纯 Transformer 基线；
-3. `hybrid_tiny, patch=2`：主模型；
-4. `hybrid_tiny, patch=4`：patch size 消融；
-5. `hybrid_no_fusion`：去除局部/全局融合的消融。
-
-如显存不足，将 `--batch-size` 改为 64 或 32。无 NVIDIA GPU 时可用 `--device cpu --no-amp`；Apple Silicon 可用 `--device mps --no-amp`。
-
-## 5. 单个实验与调参
+如果没有 NVIDIA GPU，可以改为 CPU：
 
 ```bash
-python train.py \
-  --model hybrid_tiny \
-  --dataset cifar10 \
-  --data-root ./data \
-  --download \
-  --patch-size 2 \
-  --optimizer adamw \
-  --lr 3e-4 \
-  --weight-decay 0.05 \
-  --epochs 100 \
-  --batch-size 128 \
-  --seed 42 \
-  --device cuda
+python run_experiments.py --dataset cifar10 --data-root ./data --download --epochs 100 --batch-size 128 --device cpu --no-amp
 ```
 
-需要从中断处继续时：
+如果只想单独训练主模型，可以运行：
 
 ```bash
-python train.py ... --resume runs/某次实验/last.pt
+python train.py --model hybrid_tiny --dataset cifar10 --data-root ./data --download --patch-size 2 --epochs 100 --batch-size 128 --device cuda
 ```
 
-为了让对比公平，请保持数据划分、随机种子、epoch、优化器和增强策略一致。若时间允许，可将正式对比用种子 42、123、2026 各运行一次，并报告均值与标准差。
+`run_experiments.py` 会依次运行以下 5 个模型：
 
-## 6. 输出文件
+| 序号 | 模型 | 说明 |
+| --- | --- | --- |
+| 1 | cnn_tiny | 纯 CNN 基线模型 |
+| 2 | vit_tiny | 纯 ViT 基线模型 |
+| 3 | hybrid_tiny, patch=2 | CNN-ViT 主模型 |
+| 4 | hybrid_tiny, patch=4 | patch size 消融实验 |
+| 5 | hybrid_no_fusion | 去除融合模块的消融实验 |
 
-每次实验目录包含：
+## 实验结果
 
-- `config.json`、`environment.json`：参数与软硬件环境；
-- `best.pt`、`last.pt`：最佳与最近权重；
-- `metrics.csv`、`curves.png`：逐 epoch 指标和训练曲线；
-- `confusion_matrix.csv/png`：混淆矩阵；
-- `summary.json`：最佳准确率、参数量、batch=1 推理延迟等。
+本实验在 CIFAR-10 上对 5 个模型均训练 100 epoch，得到结果如下：
 
-完整实验结束后，`runs/experiment_summary.csv` 汇总全部模型。请把该 CSV、各实验的 `summary.json` 和 `curves.png` 发回，即可自动回填技术报告中的表格、图和结论。
+| 模型 | 参数量 | 最佳 epoch | 验证损失 | 验证准确率 | 单张推理延迟 | 训练耗时 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Tiny CNN | 127,018 | 100 | 0.770831 | 89.46% | 7.64 ms | 141.98 min |
+| Tiny ViT | 1,205,898 | 88 | 0.973719 | 80.35% | 9.49 ms | 147.08 min |
+| Hybrid p=2 | 1,007,242 | 92 | 0.745805 | 91.36% | 21.74 ms | 178.46 min |
+| Hybrid p=4 | 1,007,242 | 98 | 0.749011 | 91.33% | 20.40 ms | 177.89 min |
+| Hybrid no-fusion | 725,738 | 95 | 0.745960 | 91.09% | 18.81 ms | 175.90 min |
 
-## 7. 复现注意事项
+从实验结果可以看出，CNN-ViT 混合模型取得了最高验证准确率。其中 Hybrid p=2 的验证准确率为 91.36%，高于 Tiny CNN 的 89.46% 和 Tiny ViT 的 80.35%。这说明在 CIFAR-10 分类任务中，卷积模块提供的局部特征提取能力与 Transformer 模块提供的全局关系建模能力具有互补作用。
 
-- 正式实验不要使用 `--quick` 或 batch 限制参数。
-- 推理延迟依赖硬件，只能比较在同一台设备、同一软件环境下测得的结果。
-- 若更改输入分辨率，所有模型必须使用同一 `--image-size`。
-- `--deterministic` 可提高严格复现性，但可能降低训练速度。
-- 提交前保留源码、README 和最终 `experiment_summary.csv`；权重体积较大时可不上传或仅上传最佳权重。
-
+同时，混合模型的推理延迟和训练耗时也高于纯 CNN，说明模型精度提升是以更高计算代价为前提的。消融实验中，Hybrid p=4 与 Hybrid p=2 准确率接近，但延迟略低；Hybrid no-fusion 的准确率低于主模型，说明局部特征与全局特征的融合模块对最终分类效果有一定帮助。
